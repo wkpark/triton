@@ -44,6 +44,7 @@ target_link_libraries(triton-reduce PRIVATE
 mlir_check_all_link_libraries(triton-reduce)
 
 add_llvm_executable(triton-llvm-opt
+  PARTIAL_SOURCES_INTENDED
   triton-llvm-opt.cpp
 
   DEPENDS

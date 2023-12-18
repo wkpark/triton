@@ -22,6 +22,9 @@ def libcuda_dirs():
     if env_libcuda_path:
         return [env_libcuda_path]
 
+    if os.name == "nt":
+        return [os.environ.get("CUDA_PATH") + "\\lib\\x64"]
+
     libs = subprocess.check_output(["/sbin/ldconfig", "-p"]).decode()
     # each line looks like the following:
     # libcuda.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libcuda.so.1
@@ -60,6 +63,24 @@ def cuda_include_dir():
     return os.path.join(cuda_path, "include")
 
 
+def _cc_cmd(cc, src, out, include_dirs, library_dirs):
+    if cc == "cl":
+        cc_cmd = [cc, src, "/nologo", "/O2", "/LD"]
+        cc_cmd += [f"/I{dir}" for dir in include_dirs]
+        cc_cmd += ["/link"]
+        cc_cmd += [f"/LIBPATH:{dir}" for dir in library_dirs]
+        cc_cmd += ["cuda.lib", f"/OUT:{out}"]
+    else:
+        cc_cmd = [cc, src, "-O3", "-shared", "-fPIC"]
+        cc_cmd += [f"-I{dir}" for dir in include_dirs]
+        cc_cmd += [f"-L{dir}" for dir in library_dirs]
+        cc_cmd += ["-lcuda", "-o", out]
+
+        if os.name == "nt": cc_cmd.pop(cc_cmd.index("-fPIC"))
+
+    return cc_cmd
+
+
 def _build(name, src, srcdir):
     if is_hip():
         hip_lib_dir = os.path.join(rocm_path_dir(), "lib")
@@ -88,6 +109,10 @@ def _build(name, src, srcdir):
     if scheme == 'posix_local':
         scheme = 'posix_prefix'
     py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
+    py_lib_dirs = []
+    if os.name == "nt":
+        installed_base = sysconfig.get_config_var('installed_base')
+        py_lib_dirs = [os.getenv("PYTHON_LIB_DIRS", os.path.join(installed_base, "libs"))]
 
     if is_hip():
         ret = subprocess.check_call([
@@ -95,18 +120,14 @@ def _build(name, src, srcdir):
             f"-L{hip_lib_dir}", "-lamdhip64", "-o", so
         ])
     else:
-        cc_cmd = [
-            cc, src, "-O3", f"-I{cu_include_dir}", f"-I{py_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", "-lcuda",
-            "-o", so
-        ]
-        cc_cmd += [f"-L{dir}" for dir in cuda_lib_dirs]
+        cc_cmd = _cc_cmd(cc, src, so, [cu_include_dir, py_include_dir, srcdir], [*cuda_lib_dirs, *py_lib_dirs])
         ret = subprocess.check_call(cc_cmd)
 
     if ret == 0:
         return so
     # fallback on setuptools
     extra_compile_args = []
-    library_dirs = cuda_lib_dirs
+    library_dirs = [*cuda_lib_dirs, *py_lib_dirs]
     include_dirs = [srcdir, cu_include_dir]
     libraries = ['cuda']
     # extra arguments

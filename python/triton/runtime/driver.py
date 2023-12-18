@@ -59,7 +59,7 @@ class CudaUtils(object):
         src = Path(os.path.join(dirname, "backends", "cuda.c")).read_text()
         key = hashlib.md5(src.encode("utf-8")).hexdigest()
         cache = get_cache_manager(key)
-        fname = "cuda_utils.so"
+        fname = "cuda_utils." + ("so" if os.name != "nt" else "pyd")
         cache_path = cache.get_file(fname)
         if cache_path is None:
             with tempfile.TemporaryDirectory() as tmpdir:
