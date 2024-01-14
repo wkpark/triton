@@ -1,5 +1,10 @@
 #include "cuda.h"
+#ifndef _WIN32
 #include <dlfcn.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include <stdbool.h>
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
@@ -94,10 +99,17 @@ static bool gpuAssert(CUresult code, const char *file, int line) {
 #define DISPATCH_ARGS_N(_14, _13, _12, _11, _10, _9, _8, _7, _6, _5, _4, _3,   \
                         _2, _1, N, ...)                                        \
   ADD_ENUM_ITEM_##N
+#if !defined(_MSC_VER) || defined(__clang__)
 #define DISPATCH_ARGS(...)                                                     \
   DISPATCH_ARGS_N(__VA_ARGS__, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1,  \
                   0)                                                           \
   (__VA_ARGS__)
+#else
+#define EXPAND_ARGS(args) args
+#define DISPATCH_ARGS(...)                                                     \
+  DISPATCH_ARGS_N EXPAND_ARGS((__VA_ARGS__, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, \
+                               4, 3, 2, 1, 0))(__VA_ARGS__)
+#endif
 
 #define ADD_ENUM_TO_MODULE(module, enum_name, ...)                             \
   do {                                                                         \
@@ -380,6 +392,7 @@ typedef CUresult (*cuTensorMapEncodeTiled_t)(
 typedef CUresult (*cuOccupancyMaxActiveClusters_t)(
     int *numClusters, CUfunction func, const CUlaunchConfig *config);
 
+#ifndef _WIN32
 #define defineGetFunctionHandle(name, symbolName)                              \
   static symbolName##_t name() {                                               \
     /* Open the shared library */                                              \
@@ -401,6 +414,27 @@ typedef CUresult (*cuOccupancyMaxActiveClusters_t)(
     }                                                                          \
     return funcHandle;                                                         \
   }
+#else
+#define defineGetFunctionHandle(name, symbolName)                              \
+  static symbolName##_t name() {                                               \
+    /* Open the shared library */                                              \
+    HMODULE handle = LoadLibraryA("nvcuda.dll");                               \
+    if (!handle) {                                                             \
+      PyErr_SetString(PyExc_RuntimeError, "Failed to open nvcuda.dll");        \
+      return NULL;                                                             \
+    }                                                                          \
+    symbolName##_t funcHandle =                                                \
+        (symbolName##_t)GetProcAddress((HMODULE)handle, #symbolName);          \
+    /* Check for errors */                                                     \
+    long err = GetLastError();                                                 \
+    if (err) {                                                                 \
+      PyErr_SetString(PyExc_RuntimeError,                                      \
+                      "Failed to retrieve " #symbolName " from nvcuda.dll");   \
+      return NULL;                                                             \
+    }                                                                          \
+    return funcHandle;                                                         \
+  }
+#endif
 
 defineGetFunctionHandle(getCuTensorMapEncodeTiledHandle,
                         cuTensorMapEncodeTiled);

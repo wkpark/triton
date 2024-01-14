@@ -156,7 +156,7 @@ def get_thirdparty_packages(triton_cache_path):
         if p.syspath_var_name in os.environ:
             package_dir = os.environ[p.syspath_var_name]
         version_file_path = os.path.join(package_dir, "version.txt")
-        if p.syspath_var_name not in os.environ and\
+        if p.syspath_var_name not in os.environ and p.url and\
            (not os.path.exists(version_file_path) or Path(version_file_path).read_text() != p.url):
             try:
                 shutil.rmtree(package_root_dir)
@@ -169,6 +169,9 @@ def get_thirdparty_packages(triton_cache_path):
             # write version url to package_dir
             with open(os.path.join(package_dir, "version.txt"), "w") as f:
                 f.write(p.url)
+        elif p.syspath_var_name not in os.environ and not p.url:
+            raise RuntimeError(
+                f'{p.syspath_var_name} not set ! Please install {p.package} manually and set {p.syspath_var_name}.')
         if p.include_flag:
             thirdparty_cmake_args.append(f"-D{p.include_flag}={package_dir}/include")
         if p.lib_flag:
@@ -181,13 +184,16 @@ def download_and_copy(src_path, variable, version, url_func):
         return
     base_dir = os.path.dirname(__file__)
     arch = platform.machine()
-    if arch == "x86_64":
+    if arch in ["x86_64", "AMD64"]:
         arch = "64"
-    url = url_func(arch, version)
+    supported = {"Linux": "linux", "Windows": "win"}
+    is_supported = platform.system() in supported
+    if is_supported:
+        url = url_func(supported[platform.system()], arch, version)
     dst_path = os.path.join(base_dir, os.pardir, "third_party", "nvidia", "backend", src_path)
-    is_linux = platform.system() == "Linux"
+    dst_path += ".exe" if os.name == "nt" else ""
     download = False
-    if is_linux:
+    if is_supported:
         download = True
         if os.path.exists(dst_path):
             curr_version = subprocess.check_output([dst_path, "--version"]).decode("utf-8").strip()
@@ -199,6 +205,7 @@ def download_and_copy(src_path, variable, version, url_func):
         with tempfile.TemporaryDirectory() as temp_dir:
             file.extractall(path=temp_dir)
             src_path = os.path.join(temp_dir, src_path)
+            src_path += ".exe" if os.name == "nt" else ""
             os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
             print(f'copy {src_path} to {dst_path} ...')
             shutil.copy(src_path, dst_path)
@@ -295,6 +302,10 @@ class CMakeBuild(build_ext):
             "-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON", "-DPYTHON_INCLUDE_DIRS=" + python_include_dir,
             "-DTRITON_CODEGEN_BACKENDS=" + ';'.join([b.name for b in backends])
         ]
+        if platform.system() == "Windows":
+            installed_base = sysconfig.get_config_var('installed_base')
+            py_lib_dirs = os.getenv("PYTHON_LIB_DIRS", os.path.join(installed_base, "libs"))
+            cmake_args.append("-DPYTHON_LIB_DIRS=" + py_lib_dirs)
         if lit_dir is not None:
             cmake_args.append("-DLLVM_EXTERNAL_LIT=" + lit_dir)
         cmake_args.extend(thirdparty_cmake_args)
@@ -311,9 +322,8 @@ class CMakeBuild(build_ext):
         #     cmake_args += ["-DTRITON_CODEGEN_BACKENDS=" + all_codegen_backends]
 
         if platform.system() == "Windows":
+            cmake_args += ["-DCMAKE_BUILD_TYPE=" + cfg]
             cmake_args += [f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_{cfg.upper()}={extdir}"]
-            if sys.maxsize > 2**32:
-                cmake_args += ["-A", "x64"]
         else:
             cmake_args += ["-DCMAKE_BUILD_TYPE=" + cfg]
             max_jobs = os.getenv("MAX_JOBS", str(2 * os.cpu_count()))
@@ -355,28 +365,32 @@ class CMakeBuild(build_ext):
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
 
 
-download_and_copy(
-    src_path="bin/ptxas",
-    variable="TRITON_PTXAS_PATH",
-    version="12.3.52",
-    url_func=lambda arch, version:
-    f"https://anaconda.org/nvidia/cuda-nvcc/12.3.52/download/linux-{arch}/cuda-nvcc-{version}-0.tar.bz2",
-)
-download_and_copy(
-    src_path="bin/cuobjdump",
-    variable="TRITON_CUOBJDUMP_PATH",
-    version="12.3.52",
-    url_func=lambda arch, version:
-    f"https://anaconda.org/nvidia/cuda-cuobjdump/12.3.52/download/linux-{arch}/cuda-cuobjdump-{version}-0.tar.bz2",
-)
-download_and_copy(
-    src_path="bin/nvdisasm",
-    variable="TRITON_NVDISASM_PATH",
-    version="12.3.52",
-    url_func=lambda arch, version:
-    f"https://anaconda.org/nvidia/cuda-nvdisasm/12.3.52/download/linux-{arch}/cuda-nvdisasm-{version}-0.tar.bz2",
-)
-backends = _copy_backends(["nvidia", "amd"])
+if platform.system() in ["Linux", "Windows"]:
+    download_and_copy(
+        src_path="bin/ptxas",
+        variable="TRITON_PTXAS_PATH",
+        version="12.3.52",
+        url_func=lambda system, arch, version:
+        f"https://anaconda.org/nvidia/cuda-nvcc/{version}/download/{system}-{arch}/cuda-nvcc-{version}-0.tar.bz2",
+    )
+    download_and_copy(
+        src_path="bin/cuobjdump",
+        variable="TRITON_CUOBJDUMP_PATH",
+        version="12.3.52",
+        url_func=lambda system, arch, version:
+        f"https://anaconda.org/nvidia/cuda-cuobjdump/{version}/download/{system}-{arch}/cuda-cuobjdump-{version}-0.tar.bz2",
+    )
+    download_and_copy(
+        src_path="bin/nvdisasm",
+        variable="TRITON_NVDISASM_PATH",
+        version="12.3.52",
+        url_func=lambda system, arch, version:
+        f"https://anaconda.org/nvidia/cuda-nvdisasm/{version}/download/{system}-{arch}/cuda-nvdisasm-{version}-0.tar.bz2",
+    )
+backends = ["nvidia", "amd"]
+if os.name == "nt":
+    backends = ["nvidia"]
+backends = _copy_backends(backends)
 
 package_data = dict()
 package_data["triton/tools"] = ["compile.h", "compile.c"]
