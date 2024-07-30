@@ -21,8 +21,6 @@
 
 namespace mlir {
 
-using namespace triton;
-
 SmallVector<unsigned, 3> mmaVersionToInstrShape(int version,
                                                 const ArrayRef<int64_t> &shape,
                                                 Type eltType, int numWarps) {
@@ -102,18 +100,19 @@ Value getMemAccessPtr(Operation *op) {
 
 unsigned getElementBitWidth(RankedTensorType type) {
   auto typeForMem =
-      isa<PointerType>(type.getElementType())
-          ? cast<PointerType>(type.getElementType()).getPointeeType()
+      isa<triton::PointerType>(type.getElementType())
+          ? cast<triton::PointerType>(type.getElementType()).getPointeeType()
           : type.getElementType();
   return typeForMem.getIntOrFloatBitWidth();
 }
 
-unsigned getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
-                                 ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+unsigned
+getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
+                        triton::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   Value val = getMemAccessPtr(op);
   auto ty = cast<RankedTensorType>(val.getType());
   auto shapePerCTA = triton::gpu::getShapePerCTA(ty);
-  AxisInfo &valInfo = *axisInfoAnalysis.getAxisInfo(val);
+  triton::AxisInfo &valInfo = *axisInfoAnalysis.getAxisInfo(val);
   unsigned elemNumBits = getElementBitWidth(ty);
   unsigned elemNumBytes = std::max(elemNumBits / 8, 1u);
   unsigned maxMultipleBytes = valInfo.getDivisibility(order[0]);
@@ -301,10 +300,11 @@ static std::optional<Attribute> inferDstEncoding(triton::ExpandDimsOp op,
   return sliceEncoding.getParent();
 }
 
-static std::optional<Attribute> inferDstEncoding(JoinOp op, Attribute srcEnc) {
+static std::optional<Attribute> inferDstEncoding(triton::JoinOp op,
+                                                 Attribute srcEnc) {
   Attribute dstEnc;
   if (srcEnc.getDialect()
-          .getRegisteredInterface<DialectInferLayoutInterface>()
+          .getRegisteredInterface<triton::DialectInferLayoutInterface>()
           ->inferJoinOpEncoding(srcEnc, dstEnc,
                                 /*loc=*/std::nullopt)
           .succeeded()) {
@@ -313,10 +313,11 @@ static std::optional<Attribute> inferDstEncoding(JoinOp op, Attribute srcEnc) {
   return std::nullopt;
 }
 
-static std::optional<Attribute> inferDstEncoding(SplitOp op, Attribute srcEnc) {
+static std::optional<Attribute> inferDstEncoding(triton::SplitOp op,
+                                                 Attribute srcEnc) {
   Attribute dstEnc;
   if (srcEnc.getDialect()
-          .getRegisteredInterface<DialectInferLayoutInterface>()
+          .getRegisteredInterface<triton::DialectInferLayoutInterface>()
           ->inferSplitOpEncoding(srcEnc, dstEnc,
                                  /*loc=*/std::nullopt)
           .succeeded()) {
@@ -341,11 +342,12 @@ static std::optional<Attribute> inferSrcEncoding(triton::ExpandDimsOp op,
                                              encoding);
 }
 
-static std::optional<Attribute> inferSrcEncoding(JoinOp op, Attribute dstEnc) {
+static std::optional<Attribute> inferSrcEncoding(triton::JoinOp op,
+                                                 Attribute dstEnc) {
   // Split is the inverse of join.
   Attribute srcEnc;
   if (dstEnc.getDialect()
-          .getRegisteredInterface<DialectInferLayoutInterface>()
+          .getRegisteredInterface<triton::DialectInferLayoutInterface>()
           ->inferSplitOpEncoding(dstEnc, srcEnc, /*loc=*/std::nullopt)
           .succeeded()) {
     return srcEnc;
@@ -353,11 +355,12 @@ static std::optional<Attribute> inferSrcEncoding(JoinOp op, Attribute dstEnc) {
   return std::nullopt;
 }
 
-static std::optional<Attribute> inferSrcEncoding(SplitOp op, Attribute dstEnc) {
+static std::optional<Attribute> inferSrcEncoding(triton::SplitOp op,
+                                                 Attribute dstEnc) {
   // Join is the inverse of split.
   Attribute srcEnc;
   if (dstEnc.getDialect()
-          .getRegisteredInterface<DialectInferLayoutInterface>()
+          .getRegisteredInterface<triton::DialectInferLayoutInterface>()
           ->inferJoinOpEncoding(dstEnc, srcEnc, /*loc=*/std::nullopt)
           .succeeded()) {
     return srcEnc;
@@ -455,7 +458,7 @@ std::optional<Attribute> inferSrcEncoding(Operation *op, Attribute encoding) {
       op->hasTrait<mlir::OpTrait::SameLoadStoreOperandsAndResultEncoding>() ||
       op->hasTrait<mlir::OpTrait::Elementwise>() ||
       isa<scf::WhileOp, scf::YieldOp, scf::ConditionOp,
-          nvidia_gpu::WarpGroupDotWaitOp>(op)) {
+          triton::nvidia_gpu::WarpGroupDotWaitOp>(op)) {
     return encoding;
   }
 
@@ -484,7 +487,7 @@ std::optional<Attribute> inferDstEncoding(Operation *op, Attribute encoding) {
       op->hasTrait<mlir::OpTrait::SameLoadStoreOperandsAndResultEncoding>() ||
       op->hasTrait<mlir::OpTrait::Elementwise>() ||
       isa<scf::WhileOp, scf::ForOp, scf::YieldOp, scf::ConditionOp,
-          nvidia_gpu::WarpGroupDotWaitOp>(op))
+          triton::nvidia_gpu::WarpGroupDotWaitOp>(op))
     return encoding;
   if (auto reduceOp = dyn_cast<triton::ReduceOp>(op))
     return inferDstEncoding(reduceOp, encoding);
@@ -904,7 +907,7 @@ Value linearize(OpBuilder &b, Location loc, ArrayRef<Value> multiDim,
 }
 
 bool isPureUnaryInlineAsm(Operation *op) {
-  auto inlineAsmOp = dyn_cast<ElementwiseInlineAsmOp>(op);
+  auto inlineAsmOp = dyn_cast<triton::ElementwiseInlineAsmOp>(op);
   if (!inlineAsmOp)
     return false;
   return op->getNumOperands() == 1 && op->getNumResults() == 1 &&
