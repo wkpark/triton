@@ -6,7 +6,12 @@
 // clang-format on
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#ifndef _WIN32
 #include <dlfcn.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -58,11 +63,16 @@ static struct HIPSymbolTable hipSymbolTable;
 
 bool initSymbolTable() {
   // Use the HIP runtime library loaded into the existing process if it exits.
+#ifndef _WIN32
   void *lib = dlopen("libamdhip64.so", RTLD_NOLOAD);
+#else
+  HMODULE lib = LoadLibraryA("amdhip64_6.dll");
+#endif
   if (lib) {
     // printf("[triton] chosen loaded libamdhip64.so in the process\n");
   }
 
+#ifndef _WIN32
   // Otherwise, go through the list of search paths to dlopen the first HIP
   // driver library.
   if (!lib) {
@@ -79,8 +89,15 @@ bool initSymbolTable() {
     PyErr_SetString(PyExc_RuntimeError, "cannot open libamdhip64.so");
     return false;
   }
+#else
+  if (!lib) {
+    PyErr_SetString(PyExc_RuntimeError, "cannot open amdhip64_6.dll");
+    return false;
+  }
+#endif
 
   // Resolve all symbols we are interested in.
+#ifndef _WIN32
   dlerror(); // Clear existing errors
   const char *error = NULL;
 #define QUERY_EACH_FN(hipSymbolName, ...)                                      \
@@ -92,6 +109,20 @@ bool initSymbolTable() {
     dlclose(lib);                                                              \
     return false;                                                              \
   }
+#else
+  long error = 0;
+#define QUERY_EACH_FN(hipSymbolName, ...)                                      \
+  *(void **)&hipSymbolTable.hipSymbolName =                                    \
+      GetProcAddress((HMODULE)lib, #hipSymbolName);                            \
+  error = GetLastError();                                                      \
+  if (error) {                                                                 \
+    PyErr_SetString(PyExc_RuntimeError,                                        \
+                    "cannot query " #hipSymbolName " from amdhip64_6.dll");    \
+    FreeLibrary(lib);                                                          \
+    return false;                                                              \
+  }
+
+#endif
 
   HIP_SYMBOL_LIST(QUERY_EACH_FN, QUERY_EACH_FN)
 
