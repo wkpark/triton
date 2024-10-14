@@ -16,6 +16,30 @@
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
+#if defined(_MSC_VER) && !defined(__clang__)
+// from https://gist.github.com/pps83/3210a2f980fd02bb2ba2e5a1fc4a2ef0
+#include <intrin.h>
+
+static __forceinline int __builtin_ctz(unsigned x) {
+  unsigned long r;
+  _BitScanForward(&r, x);
+  return (int)r;
+}
+
+static __forceinline int __builtin_ctzll(unsigned long long x) {
+#if defined(_WIN64)
+  unsigned long r;
+  _BitScanForward64(&r, x);
+  return (int)r;
+#else
+  int l = __builtin_ctz((unsigned)x);
+  int h = __builtin_ctz((unsigned)(x >> 32)) + 32;
+  return !!((unsigned)x) ? l : h;
+#endif
+}
+
+#endif
+
 namespace mlir::triton {
 
 namespace {
