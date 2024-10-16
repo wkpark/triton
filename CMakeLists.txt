@@ -53,7 +53,11 @@ endif()
 
 # Compiler flags
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS  -fPIC -std=gnu++17")
+if(NOT WIN32)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS  -fPIC -std=gnu++17")
+else()
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS -std=gnu++17 -Wno-deprecated")
+endif()
 
 
 # #########
@@ -146,6 +150,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     # using pip install.
     include_directories(${PYTHON_INCLUDE_DIRS})
     include_directories(${PYBIND11_INCLUDE_DIR})
+    link_directories(${PYTHON_LIB_DIRS})
   else()
     # Otherwise, we might be building from top CMakeLists.txt directly.
     # Try to find Python and pybind11 packages.
@@ -227,7 +232,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
           LLVMAArch64CodeGen
           LLVMAArch64AsmParser
       )
-  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64" OR
+         CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64") # windows x64
       list(APPEND TRITON_LIBRARIES
           LLVMX86CodeGen
           LLVMX86AsmParser
@@ -262,6 +268,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
   target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})
   if(WIN32)
     target_link_libraries(triton PRIVATE ${CMAKE_DL_LIBS})
+    set_target_properties(triton PROPERTIES SUFFIX ".pyd")
+    set_target_properties(triton PROPERTIES PREFIX "lib")
   else()
     target_link_libraries(triton PRIVATE z)
   endif()
@@ -287,6 +295,11 @@ if(NOT TRITON_BUILD_PYTHON_MODULE)
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
   endforeach()
+endif()
+
+if(WIN32)
+  option(CMAKE_USE_WIN32_THREADS_INIT "using WIN32 threads" ON)
+  option(gtest_disable_pthreads "Disable uses of pthreads in gtest." ON)
 endif()
 
 add_subdirectory(third_party/f2reduce)
