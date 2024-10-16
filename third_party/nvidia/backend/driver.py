@@ -1,6 +1,7 @@
 import functools
 import os
 import hashlib
+import sysconfig
 import subprocess
 import tempfile
 from pathlib import Path
@@ -14,12 +15,20 @@ include_dir = [os.path.join(dirname, "include")]
 libdevice_dir = os.path.join(dirname, "lib")
 libraries = ['cuda']
 
+if os.name == "nt":
+    include_dir += [os.path.join(os.environ.get("CUDA_PATH"), "include")]
+
 
 @functools.lru_cache()
 def libcuda_dirs():
     env_libcuda_path = os.getenv("TRITON_LIBCUDA_PATH")
     if env_libcuda_path:
         return [env_libcuda_path]
+    if os.name == "nt":
+        installed_base = sysconfig.get_config_var('installed_base')
+        dirs = [os.path.join(os.environ.get("CUDA_PATH"), "lib", "x64")]
+        dirs += [os.getenv("PYTHON_LIB_DIRS", os.path.join(installed_base, "libs"))]
+        return dirs
 
     libs = subprocess.check_output(["/sbin/ldconfig", "-p"]).decode()
     # each line looks like the following:
@@ -48,7 +57,9 @@ def library_dirs():
 def compile_module_from_src(src, name):
     key = hashlib.sha256(src.encode("utf-8")).hexdigest()
     cache = get_cache_manager(key)
-    cache_path = cache.get_file(f"{name}.so")
+    so_ext = sysconfig.get_config_var("EXT_SUFFIX").split(".")[-1]
+    so_name = f'{name}.{so_ext}'
+    cache_path = cache.get_file(so_name)
     if cache_path is None:
         with tempfile.TemporaryDirectory() as tmpdir:
             src_path = os.path.join(tmpdir, "main.c")
@@ -56,7 +67,7 @@ def compile_module_from_src(src, name):
                 f.write(src)
             so = _build(name, src_path, tmpdir, library_dirs(), include_dir, libraries)
             with open(so, "rb") as f:
-                cache_path = cache.put(f.read(), f"{name}.so", binary=True)
+                cache_path = cache.put(f.read(), so_name, binary=True)
     import importlib.util
     spec = importlib.util.spec_from_file_location(name, cache_path)
     mod = importlib.util.module_from_spec(spec)

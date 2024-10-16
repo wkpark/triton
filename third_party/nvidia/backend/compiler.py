@@ -11,6 +11,7 @@ import tempfile
 import signal
 import os
 import subprocess
+import sysconfig
 from pathlib import Path
 
 
@@ -20,9 +21,10 @@ def min_dot_size(target: GPUTarget):
 
 @functools.lru_cache()
 def _path_to_binary(binary: str):
+    exe = sysconfig.get_config_var("EXE")
     paths = [
         os.environ.get(f"TRITON_{binary.upper()}_PATH", ""),
-        os.path.join(os.path.dirname(__file__), "bin", binary),
+        os.path.join(os.path.dirname(__file__), "bin", f"{binary}{exe}"),
     ]
 
     for bin in paths:
@@ -32,7 +34,7 @@ def _path_to_binary(binary: str):
                 version = re.search(r".*release (\d+\.\d+).*", result.decode("utf-8"), flags=re.MULTILINE)
                 if version is not None:
                     return bin, version.group(1)
-    raise RuntimeError(f"Cannot find {binary}")
+    raise RuntimeError(f"Cannot find {binary}{exe}")
 
 
 @functools.lru_cache()
@@ -340,15 +342,9 @@ class CUDABackend(BaseBackend):
             ]
             try:
                 subprocess.run(ptxas_cmd, check=True, close_fds=False, stderr=flog)
-                if os.path.exists(fsrc.name):
-                    os.remove(fsrc.name)
-                if os.path.exists(flog.name):
-                    os.remove(flog.name)
             except subprocess.CalledProcessError as e:
                 with open(flog.name) as log_file:
                     log = log_file.read()
-                if os.path.exists(flog.name):
-                    os.remove(flog.name)
 
                 if e.returncode == 255:
                     error = 'Internal Triton PTX codegen error'
@@ -365,6 +361,11 @@ class CUDABackend(BaseBackend):
                 cubin = f.read()
             if os.path.exists(fbin):
                 os.remove(fbin)
+
+        if os.path.exists(fsrc.name):
+            os.remove(fsrc.name)
+        if os.path.exists(flog.name):
+            os.remove(flog.name)
         return cubin
 
     def add_stages(self, stages, options):
