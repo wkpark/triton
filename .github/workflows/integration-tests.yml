@@ -106,11 +106,11 @@ jobs:
         if: env.enable_integration == 'true'
         run: |
           if [ x"${{ github.repository }}" == x"triton-lang/triton" ]; then
-            echo '::set-output name=matrix-CUDA::[["a100-runner-set"], ["h100-runner-set"]]'
+            echo 'matrix-CUDA={"runner": [["a100-runner-set"], ["h100-runner-set"]]}' >> "$GITHUB_OUTPUT"
             echo '::set-output name=matrix-HIP::[["self-hosted", "gfx90a"], ["self-hosted", "gfx942"]]'
             echo '::set-output name=matrix-MACOS::[["macos-latest"]]'
           else
-            echo '::set-output name=matrix-CUDA::["ubuntu-latest"]'
+            echo 'matrix-CUDA={"runner":["ubuntu-latest", "windows-latest"]}' >> "$GITHUB_OUTPUT"
             echo '::set-output name=matrix-HIP::["ubuntu-latest"]'
             echo '::set-output name=matrix-MACOS::[["macos-latest"]]'
           fi
@@ -156,8 +156,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
-      matrix:
-        runner: ${{fromJson(needs.Runner-Preparation.outputs.matrix-CUDA)}}
+      matrix: ${{fromJson(needs.Runner-Preparation.outputs.matrix-CUDA)}}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -216,25 +215,111 @@ jobs:
           # what we put here (so long as it doesn't hit an existing key).
           key: triton-artifacts-${{ runner.os }}-${{ runner.arch }}-${{ runner.name }}-llvm-${{ steps.cache-key.outputs.llvm }}-${{ steps.cache-key.outputs.datetime }}
       - name: Inspect cache directory
+        shell: bash
         run: |
           mkdir -p ~/.triton
           ls -alh ~/.triton
       - name: Update PATH
+        if: matrix.runner != 'windows-latest'
+        shell: bash
         run: |
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+      - name: Set up Python 3.12
+        if: matrix.runner == 'windows-latest'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
       - name: Install pip dependencies
+        if: matrix.runner == 'ubuntu-latest'
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install cython setuptools wheel cmake==3.24 ninja pytest-forked pytest-xdist lit
+          python3 -m pip install cython setuptools==75.2.0 wheel cmake==3.24 ninja pytest-forked pytest-xdist lit
+      - name: Setup Micromamba
+        # install cuda drivers
+        uses: mamba-org/setup-micromamba@v1
+        if: endsWith(matrix.runner, '-latest')
+        with:
+          environment-name: triton-env
+          init-shell: bash
+          create-args: >-
+            typer ca-certificates certifi openssl zlib zstd llvm>=17.0
+          condarc: |
+            channels:
+              - nvidia/label/cuda-12.1
+              - conda-forge
+              - pytorch
+            channel_priority: strict
+      - name: set Environment Variables (Windows)
+        if: endsWith(matrix.runner, '-latest')
+        shell: bash -el {0}
+        run: |
+          # FIXME use local llvm;mlir build
+          if [ "${{ matrix.runner }}" = 'windows-latest' ]; then
+            ver=82f5acfb
+            curl -L -O https://github.com/wkpark/triton/releases/download/llvm-$ver-windows/llvm-$ver-windows-x64.tar.gz
+            curl -L -O https://github.com/wkpark/triton/releases/download/llvm-$ver-windows/llvm-fix.patch
+            tar xvf llvm-$ver-windows-x64.tar.gz
+            mv llvm-$ver-windows-x64 LLVM
+            patch -p0 < llvm-fix.patch
+            echo "LLVM_SYSPATH=${{ github.workspace }}\\LLVM" >> "$GITHUB_ENV"
+            rm -f llvm-$ver-windows-x64.tar.gz
+          fi
+          ##LLVM_SHORTHASH="$(cat cmake/llvm-hash.txt | cut -c1-8)"
+          # prepare LLVM prebuilt path. will be downloaded and extracted by setup.py step
+          ##echo "~/.triton/llvm/llvm-$LLVM_SHORTHASH-windows-x64/bin" >> "$GITHUB_PATH"
+          #echo "LLVM_SYSPATH=~/.triton/llvm/llvm-$LLVM_SHORTHASH-windows-x64" >> "$GITHUB_ENV"
+          # compile with clang
+          echo "TRITON_BUILD_WITH_CLANG_LLD=1" >> "${GITHUB_ENV}"
+      - name: CUDA Setup 12.1
+        if: endsWith(matrix.runner, '-latest')
+        shell: bash -el {0}
+        run: |
+          CUDA_HOME="${{ env.MAMBA_ROOT_PREFIX }}/envs/triton-env"
+          echo CUDA_HOME=$CUDA_HOME >> "$GITHUB_ENV"
+          echo CUDA_PATH=$CUDA_HOME >> "$GITHUB_ENV"
+      - name: Update environment
+        if: endsWith(matrix.runner, '-latest')
+        shell: bash
+        run: |
+          echo "BACKEND=CUDA" >> "${GITHUB_ENV}"
+          echo "ENABLE_TMA=0" >> "${GITHUB_ENV}"
+          echo "TRITON_DISABLE_LINE_INFO=1" >> "${GITHUB_ENV}"
+      - name: Set reusable strings
+        # Turn repeated input strings (such as the build output directory) into step outputs. These step outputs can be used throughout the workflow file.
+        id: strings
+        shell: bash
+        run: |
+          echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
       - name: Install Triton
+        if: matrix.runner == 'ubuntu-latest'
+        shell: bash -el {0}
         env:
           TRITON_BUILD_WITH_CCACHE: "true"
           CUDA_HOME: "/usr/local/cuda"
         run: |
-          echo "PATH is '$PATH'"
           cd python
-          python3 -m pip install '.[tests]'
+          echo "PATH is '$PATH'"
+          python3 -m pip install --upgrade pip
+          python3 -m pip install cython setuptools==75.2.0 wheel cmake==3.24 ninja pytest-xdist lit pybind11
+          sudo apt-get update -y
+          sudo apt-get install -y ccache clang lld
+          TRITON_BUILD_WITH_CLANG_LLD=true TRITON_BUILD_WITH_CCACHE=true python3 -m pip install --no-build-isolation -vvv '.[tests]'
+          if [ "${{ matrix.runner }}" = 'ubuntu-latest' ]; then
+            python3 setup.py bdist_wheel
+          fi
+      - name: Install Triton (Windows)
+        if: matrix.runner == 'windows-latest'
+        shell: bash -el {0}
+        run: |
+          cd python
+          python -m pip install --upgrade pip
+          python -m pip install cython setuptools==75.2.0 wheel cmake==3.24 ninja pytest-xdist lit pybind11
+          python -m pip install --no-build-isolation -vvv .
+          python setup.py bdist_wheel
       - name: Run lit tests
+        if: ${{ !endsWith(matrix.runner, '-latest') }}
+        shell: bash -el {0}
         run: |
           cd python
           LIT_TEST_DIR="build/$(ls build | grep -i cmake)/test"
@@ -243,6 +328,7 @@ jobs:
           fi
           lit -v "${LIT_TEST_DIR}"
       - name: Run python tests on CUDA
+        if: ${{ !endsWith(matrix.runner, '-latest') }}
         run: |
           INSTRUMENTATION_LIB_DIR="${GITHUB_WORKSPACE}/python/build/$(ls python/build | grep -i lib)/triton/instrumentation"
           if [ ! -d "${INSTRUMENTATION_LIB_DIR}" ]; then
@@ -269,11 +355,14 @@ jobs:
            runtime/test_autotuner.py::test_kwargs[False]\
            ../../tutorials/06-fused-attention.py::test_op --device cpu
       - name: Run C++ unittests
+        if: ${{ !endsWith(matrix.runner, '-latest') }}
+        shell: bash
         run: |
           cd python
           cd "build/$(ls build | grep -i cmake)"
           ctest -j32
       - name: Run Proton tests
+        if: ${{ !endsWith(matrix.runner, '-latest') }}
         env:
           LD_LIBRARY_PATH: "/usr/local/cuda/extras/CUPTI/lib64:$LD_LIBRARY_PATH"
         run: |
@@ -291,6 +380,7 @@ jobs:
           path: ~/.triton/cache ~/.cache/ccache
           key: triton-artifacts-${{ runner.os }}-${{ runner.arch }}-${{ runner.name }}-llvm-${{ steps.cache-key.outputs.llvm }}-${{ steps.cache-key.outputs.datetime }}
       - name: Inspect cache directories
+        shell: bash
         run: |
           mkdir -p ~/.triton
           ls -alh ~/.triton
@@ -299,6 +389,13 @@ jobs:
           mkdir -p ~/.cache/ccache
           ls -alh ~/.cache/ccache
           du -sh ~/.cache/ccache
+      - name: Upload Build artifacts
+        if: endsWith(matrix.runner, '-latest')
+        uses: actions/upload-artifact@v4
+        with:
+          name: triton-dist ${{ matrix.runner }}
+          path: |
+            ${{ github.workspace }}/python/dist/
   Integration-Tests-AMD:
     needs: Runner-Preparation
     if: needs.Runner-Preparation.outputs.matrix-HIP != ''
@@ -369,6 +466,7 @@ jobs:
           # what we put here (so long as it doesn't hit an existing key).
           key: triton-artifacts-${{ runner.os }}-${{ runner.arch }}-${{ runner.name }}-llvm-${{ steps.cache-key.outputs.llvm }}-${{ steps.cache-key.outputs.datetime }}
       - name: Inspect cache directory
+        shell: bash
         run: |
           mkdir -p ~/.triton
           ls -alh ~/.triton
@@ -388,9 +486,12 @@ jobs:
           pip install -v -e '.[tests]'
       - name: Clean up after an unsuccessful build
         if: ${{ !success() && steps.amd-install-triton.outcome != 'success' }}
+        shell: bash
         run: |
           rm -rf ~/.triton
       - name: Run lit tests
+        if: ${{ !endsWith(matrix.runner, '-latest') }}
+        shell: bash -el {0}
         run: |
           cd python
           LIT_TEST_DIR="build/$(ls build | grep -i cmake)/test"
@@ -417,10 +518,13 @@ jobs:
           # Run test_line_info.py separately with TRITON_DISABLE_LINE_INFO=0
           TRITON_DISABLE_LINE_INFO=0 python3 -m pytest -s -n 8 language/test_line_info.py
       - name: Run Proton tests
+        if: ${{ !endsWith(matrix.runner, '-latest') }}
         run: |
           cd third_party/proton
           python3 -m pytest test
       - name: Run C++ unittests
+        if: ${{ !endsWith(matrix.runner, '-latest') }}
+        shell: bash
         run: |
           cd python
           cd "build/$(ls build | grep -i cmake)"
@@ -437,6 +541,7 @@ jobs:
           path: ~/.triton/cache ~/.cache/ccache
           key: triton-artifacts-${{ runner.os }}-${{ runner.arch }}-${{ runner.name }}-llvm-${{ steps.cache-key.outputs.llvm }}-${{ steps.cache-key.outputs.datetime }}
       - name: Inspect cache directories
+        shell: bash
         run: |
           mkdir -p ~/.triton
           ls -alh ~/.triton
@@ -446,6 +551,7 @@ jobs:
           ls -alh ~/.cache/ccache
           du -sh ~/.cache/ccache
       - name: Clean up caches
+        shell: bash
         run: |
           rm -rf ~/.triton/cache
   Build-Tests:
@@ -518,6 +624,7 @@ jobs:
           # what we put here (so long as it doesn't hit an existing key).
           key: triton-artifacts-${{ runner.os }}-${{ runner.arch }}-${{ runner.name }}-llvm-${{ steps.cache-key.outputs.llvm }}-${{ steps.cache-key.outputs.datetime }}
       - name: Inspect cache directory
+        shell: bash
         run: |
           mkdir -p ~/.triton
           ls -alh ~/.triton
@@ -530,7 +637,7 @@ jobs:
           python3 -m venv ~/.venv
           source ~/.venv/bin/activate
           python3 -m pip install --upgrade pip
-          python3 -m pip install cython setuptools wheel cmake==3.24 ninja pytest-xdist lit pybind11
+          python3 -m pip install cython setuptools==75.2.0 wheel cmake==3.24 ninja pytest-xdist lit pybind11
       - name: Install Triton
         env:
           TRITON_BUILD_WITH_CCACHE: "true"
@@ -555,6 +662,7 @@ jobs:
           path: ~/.triton/cache ~/.cache/ccache
           key: triton-artifacts-${{ runner.os }}-${{ runner.arch }}-${{ runner.name }}-llvm-${{ steps.cache-key.outputs.llvm }}-${{ steps.cache-key.outputs.datetime }}
       - name: Inspect cache directories
+        shell: bash
         run: |
           mkdir -p ~/.triton
           ls -alh ~/.triton
