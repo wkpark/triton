@@ -20,7 +20,7 @@ def quiet():
 
 def _cc_cmd(cc, src, out, include_dirs, library_dirs, libraries):
     if cc in ["cl", "clang-cl"]:
-        cc_cmd = [cc, src, "/nologo", "/O2", "/LD"]
+        cc_cmd = [cc, src, "/nologo", "/O2", "/LD", "/wd4819"]
         cc_cmd += [f"/I{dir}" for dir in include_dirs if dir is not None]
         cc_cmd += ["/link"]
         cc_cmd += [f"/LIBPATH:{dir}" for dir in library_dirs]
