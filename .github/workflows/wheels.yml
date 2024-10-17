@@ -9,6 +9,7 @@ permissions: read-all
 jobs:
 
   Build-Wheels:
+    if: github.repository == 'triton-lang/triton'
     timeout-minutes: 60
 
     runs-on: [self-hosted, CPU]
