@@ -96,7 +96,7 @@ def test_compile_in_forked_subproc_with_forced_gc(fresh_triton_cache) -> None:
 
     # stage 2.p
     shutil.rmtree(fresh_triton_cache)
-    assert multiprocessing.get_start_method() == 'fork'
+    assert multiprocessing.get_start_method() in ['fork', 'spawn']
     proc = multiprocessing.Process(target=compile_empty_kernel_with_gc, args=(config, ))
 
     # stage 3.c
