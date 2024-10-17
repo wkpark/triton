@@ -290,6 +290,8 @@ def download_and_copy(name, src_path, dst_path, variable, version, url_func):
     is_supported = system in supported
     if is_supported:
         url = url_func(supported[system], arch, version)
+    else:
+        return
     tmp_path = os.path.join(triton_cache_path, "nvidia", name)  # path to cache the download
     dst_path = os.path.join(base_dir, os.pardir, "third_party", "nvidia", "backend", dst_path)  # final binary path
     platform_name = "sbsa-linux" if arch == "aarch64" else "x86_64-linux"
