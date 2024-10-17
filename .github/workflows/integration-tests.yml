@@ -255,9 +255,20 @@ jobs:
         if: endsWith(matrix.runner, '-latest')
         shell: bash -el {0}
         run: |
-          LLVM_SHORTHASH="$(cat cmake/llvm-hash.txt | cut -c1-8)"
+          # FIXME use local llvm;mlir build
+          if [ "${{ matrix.runner }}" = 'windows-latest' ]; then
+            ver=82f5acfb
+            curl -L -O https://github.com/wkpark/triton/releases/download/llvm-$ver-windows/llvm-$ver-windows-x64.tar.gz
+            curl -L -O https://github.com/wkpark/triton/releases/download/llvm-$ver-windows/llvm-fix.patch
+            tar xvf llvm-$ver-windows-x64.tar.gz
+            mv llvm-$ver-windows-x64 LLVM
+            patch -p0 < llvm-fix.patch
+            echo "LLVM_SYSPATH=${{ github.workspace }}\\LLVM" >> "$GITHUB_ENV"
+            rm -f llvm-$ver-windows-x64.tar.gz
+          fi
+          ##LLVM_SHORTHASH="$(cat cmake/llvm-hash.txt | cut -c1-8)"
           # prepare LLVM prebuilt path. will be downloaded and extracted by setup.py step
-          echo "~/.triton/llvm/llvm-$LLVM_SHORTHASH-windows-x64/bin" >> "$GITHUB_PATH"
+          ##echo "~/.triton/llvm/llvm-$LLVM_SHORTHASH-windows-x64/bin" >> "$GITHUB_PATH"
           #echo "LLVM_SYSPATH=~/.triton/llvm/llvm-$LLVM_SHORTHASH-windows-x64" >> "$GITHUB_ENV"
           # compile with clang
           echo "TRITON_BUILD_WITH_CLANG_LLD=1" >> "${GITHUB_ENV}"
