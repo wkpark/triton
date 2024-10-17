@@ -480,7 +480,7 @@ class CMakeBuild(build_ext):
         else:
             cmake_args += ["-DTRITON_BUILD_PROTON=OFF"]
 
-        if is_offline_build():
+        if is_offline_build() or platform.system() == "Windows":
             # unit test builds fetch googletests from GitHub
             cmake_args += ["-DTRITON_BUILD_UT=OFF"]
 
