@@ -8,6 +8,7 @@ permissions: read-all
 
 jobs:
   Build-Documentation:
+    if: github.repository == 'triton-lang/triton'
     runs-on: [a100-runner-set]
     timeout-minutes: 30
 
