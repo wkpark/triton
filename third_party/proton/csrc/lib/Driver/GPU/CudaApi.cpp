@@ -10,13 +10,25 @@ struct ExternLibCuda : public ExternLibBase {
   // https://forums.developer.nvidia.com/t/wsl2-libcuda-so-and-libcuda-so-1-should-be-symlink/236301
   // On WSL, "libcuda.so" and "libcuda.so.1" may not be linked, so we use
   // "libcuda.so.1" instead.
+#ifndef _WIN32
   static constexpr const char *name = "libcuda.so.1";
+#else
+  static constexpr const char *name = "nvcuda.dll";
+#endif
   static constexpr const char *defaultDir = "";
   static constexpr RetType success = CUDA_SUCCESS;
+#ifndef _WIN32
   static void *lib;
+#else
+  static HMODULE lib;
+#endif
 };
 
+#ifndef _WIN32
 void *ExternLibCuda::lib = nullptr;
+#else
+HMODULE ExternLibCuda::lib = nullptr;
+#endif
 
 DEFINE_DISPATCH(ExternLibCuda, init, cuInit, int)
 
