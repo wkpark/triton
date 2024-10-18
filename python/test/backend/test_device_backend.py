@@ -91,7 +91,8 @@ class ExtensionUtils:
         src = Path(os.path.join(dirname, "extension_backend.c")).read_text()
         key = hashlib.sha256(src.encode("utf-8")).hexdigest()
         cache = get_cache_manager(key)
-        fname = "ext_utils.so"
+        soext = "so" if os.name != "nt" else "pyd"
+        fname = "ext_utils." + soext
         cache_path = cache.get_file(fname)
         if cache_path is None:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -174,7 +175,8 @@ class ExtensionBackend(BaseBackend):
         # name of files that are cached
         so_cache_key = make_so_cache_key(self.get_version_key(), signature, constants)
         so_cache_manager = get_cache_manager(so_cache_key)
-        so_name = f"{name}.so"
+        soext = "so" if os.name != "nt" else "pyd"
+        so_name = f"{name}.{soext}"
         # retrieve stub from cache if it exists
         cache_path = so_cache_manager.get_file(so_name)
         if cache_path is None:
