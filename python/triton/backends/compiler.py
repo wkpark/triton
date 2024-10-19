@@ -2,6 +2,7 @@ import os
 import re
 import hashlib
 import subprocess
+import sysconfig
 
 from abc import ABCMeta, abstractmethod, abstractclassmethod
 from dataclasses import dataclass
@@ -228,20 +229,24 @@ class BaseBackend(metaclass=ABCMeta):
 
     @staticmethod
     def _path_to_binary(binary: str):
+        exe = sysconfig.get_config_var("EXE")
         base_dir = os.path.join(os.path.dirname(__file__), os.pardir)
         paths = [
             os.environ.get(f"TRITON_{binary.upper()}_PATH", ""),
-            os.path.join(base_dir, "third_party", "cuda", "bin", binary),
+            os.path.join(base_dir, "third_party", "cuda", "bin", f"{binary}{exe}"),
         ]
         for p in paths:
-            bin = p.split(" ")[0]
+            if os.name != "nt":
+                bin = p.split(" ")[0]
+            else:
+                bin = p
             if os.path.exists(bin) and os.path.isfile(bin):
                 result = subprocess.check_output([bin, "--version"], stderr=subprocess.STDOUT)
                 if result is not None:
                     version = re.search(r".*release (\d+\.\d+).*", result.decode("utf-8"), flags=re.MULTILINE)
                     if version is not None:
                         return p, version.group(1)
-        raise RuntimeError(f"Cannot find {binary}")
+        raise RuntimeError(f"Cannot find {binary}{exe}")
 
     @abstractclassmethod
     def supports_target(target: GPUTarget):
