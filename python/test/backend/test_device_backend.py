@@ -43,7 +43,21 @@ def build_for_backend(name, src, srcdir):
         scheme = 'posix_prefix'
     py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
 
-    ret = subprocess.check_call([cc, src, f"-I{py_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", "-o", so])
+    py_lib_dirs = []
+    if os.name == "nt":
+        installed_base = sysconfig.get_config_var('installed_base')
+        py_lib_dirs = [os.getenv("PYTHON_LIB_DIRS", os.path.join(installed_base, "libs"))]
+
+    if os.name == "nt" and os.path.basename(cc).lower() in ["cl", "clang-cl", "cl.exe", "clang-cl.exe"]:
+        cmd = [cc, src, f"-I{py_include_dir}", f"-I{srcdir}", "/LD", f"/OUT:{so}"]
+        cmd += [f"/LIBPATH:{dir}" for dir in py_lib_dirs]
+        ret = subprocess.check_call(cmd)
+    else:
+        cmd = [cc, src, f"-I{py_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", "-o", so]
+        cmd += [f"-L{dir}" for dir in py_lib_dirs]
+        if os.name == "nt":
+            cmd.pop(cmd.index("-fPIC"))
+        ret = subprocess.check_call(cmd)
     if ret == 0:
         return so
     # fallback on setuptools
@@ -59,7 +73,7 @@ def build_for_backend(name, src, srcdir):
         language='c',
         sources=[src],
         include_dirs=include_dirs,
-        extra_compile_args=extra_compile_args + ['-O3'],
+        extra_compile_args=extra_compile_args + ['-O3' if "-shared" in cmd else "/O2"],
         extra_link_args=extra_link_args,
         library_dirs=library_dirs,
         libraries=libraries,
