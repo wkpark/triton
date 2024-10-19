@@ -34,7 +34,9 @@ def _cc_cmd(cc, src, out, include_dirs, library_dirs, libraries):
         cc_cmd += [f"-I{dir}" for dir in include_dirs if dir is not None]
         cc_cmd += ["-o", out]
 
-        if os.name == "nt": cc_cmd.pop(cc_cmd.index("-fPIC"))
+        if os.name == "nt":
+            cc_cmd.pop(cc_cmd.index("-fPIC"))
+            cc_cmd.append("-Wno-deprecated")
 
     return cc_cmd
 
