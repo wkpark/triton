@@ -2,6 +2,7 @@ import functools
 import os
 import hashlib
 import subprocess
+import sysconfig
 import tempfile
 from pathlib import Path
 from triton.runtime.build import _build
@@ -63,7 +64,10 @@ def _find_already_mmapped_dylib_on_linux(lib_name):
 
 @functools.lru_cache()
 def _get_path_to_hip_runtime_dylib():
-    lib_name = "libamdhip64.so"
+    if os.name == "nt":
+        lib_name = "amdhip64_6.dll"
+    else:
+        lib_name = "libamdhip64.so"
 
     # If we are told explicitly what HIP runtime dynamic library to use, obey that.
     env_libhip_path = os.getenv("TRITON_LIBHIP_PATH")
@@ -96,9 +100,9 @@ def _get_path_to_hip_runtime_dylib():
         paths.append(path)
 
     # Then try to see if developer provides a HIP runtime dynamic library using LD_LIBARAY_PATH.
-    env_ld_library_path = os.getenv("LD_LIBRARY_PATH")
+    env_ld_library_path = os.getenv("LD_LIBRARY_PATH", os.path.join(os.getenv("HIP_PATH"), "bin"))
     if env_ld_library_path:
-        for d in env_ld_library_path.split(":"):
+        for d in env_ld_library_path.split(os.pathsep):
             f = os.path.join(d, lib_name)
             if os.path.exists(f):
                 return f
@@ -127,15 +131,21 @@ def _get_path_to_hip_runtime_dylib():
 def compile_module_from_src(src, name):
     key = hashlib.sha256(src.encode("utf-8")).hexdigest()
     cache = get_cache_manager(key)
-    cache_path = cache.get_file(f"{name}.so")
+    so_suffix = sysconfig.get_config_var("EXT_SUFFIX").split(".")[-1]
+    cache_path = cache.get_file(f"{name}.{so_suffix}")
+
+    library_dirs = []
+    if os.name == "nt":
+        installed_base = sysconfig.get_config_var('installed_base')
+        library_dirs = [os.getenv("PYTHON_LIB_DIRS", os.path.join(installed_base, "libs"))]
     if cache_path is None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             src_path = os.path.join(tmpdir, "main.c")
             with open(src_path, "w") as f:
                 f.write(src)
-            so = _build(name, src_path, tmpdir, [], include_dir, [])
+            so = _build(name, src_path, tmpdir, library_dirs, include_dir, [])
             with open(so, "rb") as f:
-                cache_path = cache.put(f.read(), f"{name}.so", binary=True)
+                cache_path = cache.put(f.read(), f"{name}.{so_suffix}", binary=True)
     import importlib.util
     spec = importlib.util.spec_from_file_location(name, cache_path)
     mod = importlib.util.module_from_spec(spec)
@@ -151,7 +161,7 @@ class HIPUtils(object):
         return cls.instance
 
     def __init__(self):
-        libhip_path = _get_path_to_hip_runtime_dylib()
+        libhip_path = _get_path_to_hip_runtime_dylib().replace(os.sep, "/")
         src = Path(os.path.join(dirname, "driver.c")).read_text()
         # Just do a simple search and replace here instead of templates or format strings.
         # This way we don't need to escape-quote C code curly brackets and we can replace
@@ -231,7 +241,7 @@ def make_launcher(constants, signature, ids, warp_size):
     format = "iiiKKOOOO" + args_format
     args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
 
-    libhip_path = _get_path_to_hip_runtime_dylib()
+    libhip_path = _get_path_to_hip_runtime_dylib().replace(os.sep, "/")
 
     # generate glue code
     params = [i for i in signature.keys() if i not in constants]
@@ -239,9 +249,13 @@ def make_launcher(constants, signature, ids, warp_size):
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 #include <Python.h>
+#ifndef _WIN32
 #include <dlfcn.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include <stdbool.h>
-#include <dlfcn.h>
 
 // The list of paths to search for the HIP runtime library. The caller Python
 // code should substitute the search path placeholder.
@@ -274,11 +288,16 @@ static struct HIPSymbolTable hipSymbolTable;
 
 bool initSymbolTable() {{
   // Use the HIP runtime library loaded into the existing process if it exits.
+#ifndef _WIN32
   void *lib = dlopen("libamdhip64.so", RTLD_NOLOAD);
+#else
+  HMODULE lib = LoadLibraryA("amdhip64_6.dll");
+#endif
   if (lib) {{
     // printf("[triton] chosen loaded libamdhip64.so in the process\\n");
   }}
 
+#ifndef _WIN32
   // Otherwise, go through the list of search paths to dlopen the first HIP
   // driver library.
   if (!lib) {{
@@ -295,7 +314,14 @@ bool initSymbolTable() {{
     PyErr_SetString(PyExc_RuntimeError, "cannot open libamdhip64.so");
     return false;
   }}
+#else
+  if (!lib) {{
+    PyErr_SetString(PyExc_RuntimeError, "cannot open amdhip64_6.dll");
+    return false;
+  }}
+#endif
 
+#ifndef _WIN32
   // Resolve all symbols we are interested in.
   dlerror(); // Clear existing errors
   const char *error = NULL;
@@ -308,6 +334,20 @@ bool initSymbolTable() {{
     dlclose(lib);                                                             \\
     return false;                                                             \\
   }}
+#else
+  // Resolve all symbols we are interested in.
+  long error = 0;
+#define QUERY_EACH_FN(hipSymbolName, ...)                                     \\
+  *(void **)&hipSymbolTable.hipSymbolName = GetProcAddress(lib, #hipSymbolName); \\
+  error = GetLastError();                                                     \\
+  if (error) {{                                                               \\
+    PyErr_SetString(PyExc_RuntimeError,                                       \\
+                    "cannot query " #hipSymbolName " from amdhip64_6.dll");     \\
+    FreeLibrary(lib);                                                         \\
+    return false;                                                             \\
+  }}
+
+#endif
 
   HIP_SYMBOL_LIST(QUERY_EACH_FN, QUERY_EACH_FN)
 

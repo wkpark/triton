@@ -66,11 +66,19 @@ extern "C" {
  *  @{
  */
 
+#if __GNUC__ || __has_attribute(always_inline)
+#define C10_ALWAYS_INLINE __inline__ __attribute__((always_inline))
+#elif defined(_MSC_VER) && !__INTEL_COMPILER && _MSC_VER >= 1310 // since Visual Studio .NET 2003
+#define C10_ALWAYS_INLINE inline __forceinline
+#else
+#define C10_ALWAYS_INLINE inline
+#endif
+
 /**
  * @brief Macro to use to determine that a  flag is set when querying flags within uint8_t[8]
  * types
  */
-static __inline__ __attribute__((always_inline)) bool hsa_flag_isset64(uint8_t* value,
+static C10_ALWAYS_INLINE bool hsa_flag_isset64(uint8_t* value,
                                                                        uint32_t bit) {
   unsigned int index = bit / 8;
   unsigned int subBit = bit % 8;

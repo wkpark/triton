@@ -167,7 +167,7 @@ def get_json_package_info():
 def get_llvm_package_info():
     system = platform.system()
     try:
-        arch = {"x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}[platform.machine()]
+        arch = {"x86_64": "x64", "AMD64": "x64", "arm64": "arm64", "aarch64": "arm64"}[platform.machine()]
     except KeyError:
         arch = platform.machine()
     if system == "Darwin":
@@ -196,6 +196,8 @@ def get_llvm_package_info():
                 f"LLVM pre-compiled image is not available for {system}-{arch}. Proceeding with user-configured LLVM from source build."
             )
             return Package("llvm", "LLVM-C.lib", "", "LLVM_INCLUDE_DIRS", "LLVM_LIBRARY_DIR", "LLVM_SYSPATH")
+    elif system == "Windows":
+        system_suffix = f"windows-{arch}"
     else:
         print(
             f"LLVM pre-compiled image is not available for {system}-{arch}. Proceeding with user-configured LLVM from source build."
@@ -281,10 +283,13 @@ def download_and_copy(name, src_path, dst_path, variable, version, url_func):
     base_dir = os.path.dirname(__file__)
     system = platform.system()
     try:
-        arch = {"x86_64": "64", "arm64": "aarch64", "aarch64": "aarch64"}[platform.machine()]
+        arch = {"x86_64": "64", "AMD64": "64", "arm64": "aarch64", "aarch64": "aarch64"}[platform.machine()]
     except KeyError:
         arch = platform.machine()
-    supported = {"Linux": "linux", "Darwin": "linux"}
+    supported = {"Linux": "linux", "Darwin": "linux", "Windows": "win"}
+    if system not in supported:
+        return
+
     url = url_func(supported[system], arch, version)
     tmp_path = os.path.join(triton_cache_path, "nvidia", name)  # path to cache the download
     dst_path = os.path.join(base_dir, os.pardir, "third_party", "nvidia", "backend", dst_path)  # final binary path
@@ -292,7 +297,7 @@ def download_and_copy(name, src_path, dst_path, variable, version, url_func):
     src_path = src_path(platform_name, version) if callable(src_path) else src_path
     src_path = os.path.join(tmp_path, src_path)
     download = not os.path.exists(src_path)
-    if os.path.exists(dst_path) and system == "Linux" and shutil.which(dst_path) is not None:
+    if os.path.exists(dst_path) and system in ("Linux", "Windows") and shutil.which(dst_path) is not None:
         curr_version = subprocess.check_output([dst_path, "--version"]).decode("utf-8").strip()
         curr_version = re.search(r"V([.|\d]+)", curr_version).group(1)
         download = download or curr_version != version
@@ -421,6 +426,10 @@ class CMakeBuild(build_ext):
             "-DTRITON_CODEGEN_BACKENDS=" + ';'.join([b.name for b in backends if not b.is_external]),
             "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external])
         ]
+        if platform.system() == "Windows":
+            installed_base = sysconfig.get_config_var('installed_base')
+            py_lib_dirs = os.getenv("PYTHON_LIB_DIRS", os.path.join(installed_base, "libs"))
+            cmake_args.append("-DPYTHON_LIB_DIRS=" + py_lib_dirs)
         if lit_dir is not None:
             cmake_args.append("-DLLVM_EXTERNAL_LIT=" + lit_dir)
         cmake_args.extend(thirdparty_cmake_args)
@@ -430,9 +439,8 @@ class CMakeBuild(build_ext):
         build_args = ["--config", cfg]
 
         if platform.system() == "Windows":
+            cmake_args += ["-DCMAKE_BUILD_TYPE=" + cfg]
             cmake_args += [f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_{cfg.upper()}={extdir}"]
-            if sys.maxsize > 2**32:
-                cmake_args += ["-A", "x64"]
         else:
             cmake_args += ["-DCMAKE_BUILD_TYPE=" + cfg]
             max_jobs = os.getenv("MAX_JOBS", str(2 * os.cpu_count()))
@@ -472,7 +480,7 @@ class CMakeBuild(build_ext):
         else:
             cmake_args += ["-DTRITON_BUILD_PROTON=OFF"]
 
-        if is_offline_build():
+        if is_offline_build() or platform.system() == "Windows":
             # unit test builds fetch googletests from GitHub
             cmake_args += ["-DTRITON_BUILD_UT=OFF"]
 
@@ -499,8 +507,10 @@ def get_platform_dependent_src_path(subdir):
          if int(version_major) >= 12 and int(version_minor1) >= 5 else subdir)(*version.split('.')))
 
 
+exe = sysconfig.get_config_var("EXE")
+
 download_and_copy(
-    name="ptxas", src_path="bin/ptxas", dst_path="bin/ptxas", variable="TRITON_PTXAS_PATH",
+    name="ptxas", src_path=f"bin/ptxas{exe}", dst_path=f"bin/ptxas{exe}", variable="TRITON_PTXAS_PATH",
     version=NVIDIA_TOOLCHAIN_VERSION["ptxas"], url_func=lambda system, arch, version:
     ((lambda version_major, version_minor1, version_minor2:
       f"https://anaconda.org/nvidia/cuda-nvcc-tools/{version}/download/{system}-{arch}/cuda-nvcc-tools-{version}-0.tar.bz2"
@@ -509,8 +519,8 @@ download_and_copy(
      (*version.split('.'))))
 download_and_copy(
     name="cuobjdump",
-    src_path="bin/cuobjdump",
-    dst_path="bin/cuobjdump",
+    src_path=f"bin/cuobjdump{exe}",
+    dst_path=f"bin/cuobjdump{exe}",
     variable="TRITON_CUOBJDUMP_PATH",
     version=NVIDIA_TOOLCHAIN_VERSION["cuobjdump"],
     url_func=lambda system, arch, version:
@@ -518,8 +528,8 @@ download_and_copy(
 )
 download_and_copy(
     name="nvdisasm",
-    src_path="bin/nvdisasm",
-    dst_path="bin/nvdisasm",
+    src_path=f"bin/nvdisasm{exe}",
+    dst_path=f"bin/nvdisasm{exe}",
     variable="TRITON_NVDISASM_PATH",
     version=NVIDIA_TOOLCHAIN_VERSION["nvdisasm"],
     url_func=lambda system, arch, version:
