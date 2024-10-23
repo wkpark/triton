@@ -1,6 +1,7 @@
 import functools
 import os
 import hashlib
+import sysconfig
 import subprocess
 import tempfile
 from pathlib import Path
@@ -14,12 +15,20 @@ include_dir = [os.path.join(dirname, "include")]
 libdevice_dir = os.path.join(dirname, "lib")
 libraries = ['cuda']
 
+if os.name == "nt":
+    include_dir += [os.path.join(os.environ.get("CUDA_PATH"), "include")]
+
 
 @functools.lru_cache()
 def libcuda_dirs():
     env_libcuda_path = os.getenv("TRITON_LIBCUDA_PATH")
     if env_libcuda_path:
         return [env_libcuda_path]
+    if os.name == "nt":
+        installed_base = sysconfig.get_config_var('installed_base')
+        dirs = [os.path.join(os.environ.get("CUDA_PATH"), "lib", "x64")]
+        dirs += [os.getenv("PYTHON_LIB_DIRS", os.path.join(installed_base, "libs"))]
+        return dirs
 
     libs = subprocess.check_output(["/sbin/ldconfig", "-p"]).decode()
     # each line looks like the following:
@@ -48,7 +57,9 @@ def library_dirs():
 def compile_module_from_src(src, name):
     key = hashlib.sha256(src.encode("utf-8")).hexdigest()
     cache = get_cache_manager(key)
-    cache_path = cache.get_file(f"{name}.so")
+    so_ext = sysconfig.get_config_var("EXT_SUFFIX").split(".")[-1]
+    so_name = f'{name}.{so_ext}'
+    cache_path = cache.get_file(so_name)
     if cache_path is None:
         with tempfile.TemporaryDirectory() as tmpdir:
             src_path = os.path.join(tmpdir, "main.c")
@@ -56,7 +67,7 @@ def compile_module_from_src(src, name):
                 f.write(src)
             so = _build(name, src_path, tmpdir, library_dirs(), include_dir, libraries)
             with open(so, "rb") as f:
-                cache_path = cache.put(f.read(), f"{name}.so", binary=True)
+                cache_path = cache.put(f.read(), so_name, binary=True)
     import importlib.util
     spec = importlib.util.spec_from_file_location(name, cache_path)
     mod = importlib.util.module_from_spec(spec)
@@ -159,11 +170,21 @@ def make_launcher(constants, signature, ids):
 
     # generate glue code
     params = [i for i in signature.keys() if i not in constants]
+    if params:
+        params_decl = ", ".join(f"&arg{i}" for i in params)
+        params_decl = f"void *params[] = {{ {params_decl} }};"
+    else:
+        params_decl = "void **params = NULL;"
     src = f"""
 #include \"cuda.h\"
 #include <stdbool.h>
 #include <Python.h>
+#ifndef _WIN32
 #include <dlfcn.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 static inline void gpuAssert(CUresult code, const char *file, int line)
 {{
@@ -186,6 +207,7 @@ static inline void gpuAssert(CUresult code, const char *file, int line)
 
 typedef CUresult (*cuLaunchKernelEx_t)(const CUlaunchConfig* config, CUfunction f, void** kernelParams, void** extra);
 
+#ifndef _WIN32
 static cuLaunchKernelEx_t getLaunchKernelExHandle() {{
   // Open the shared library
   void* handle = dlopen("libcuda.so.1", RTLD_LAZY);
@@ -204,9 +226,28 @@ static cuLaunchKernelEx_t getLaunchKernelExHandle() {{
   }}
   return cuLaunchKernelExHandle;
 }}
+#else
+static cuLaunchKernelEx_t getLaunchKernelExHandle() {{
+  // Open the shared library
+  HMODULE handle = LoadLibraryA("nvcuda.dll");
+  if (!handle) {{
+    PyErr_SetString(PyExc_RuntimeError, "Failed to open nvcuda.dll");
+    return NULL;
+  }}
+  cuLaunchKernelEx_t cuLaunchKernelExHandle =
+      (cuLaunchKernelEx_t)GetProcAddress((HMODULE)handle, "cuLaunchKernelEx");
+  // Check for errors
+  long error = GetLastError();
+  if (error) {{
+    PyErr_SetString(PyExc_RuntimeError, "Failed to retrieve cuLaunchKernelEx from nvcuda.dll");
+    return NULL;
+  }}
+  return cuLaunchKernelExHandle;
+}}
+#endif
 
 static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int clusterDimX, int clusterDimY, int clusterDimZ, int shared_memory, CUstream stream, CUfunction function{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
-  void *params[] = {{ {', '.join(f"&arg{i}" for i in params)} }};
+  {params_decl}
   if (gridX*gridY*gridZ > 0) {{
     if (num_ctas == 1) {{
       CUDA_CHECK(cuLaunchKernel(function, gridX, gridY, gridZ, 32*num_warps, 1, 1, shared_memory, stream, params, 0));

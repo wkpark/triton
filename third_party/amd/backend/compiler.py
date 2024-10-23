@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 from types import ModuleType
 import hashlib
+import sysconfig
 import tempfile
 import os
 import re
@@ -171,8 +172,14 @@ class HIPBackend(BaseBackend):
             lld = Path(lld_env_path)
             if lld.is_file():
                 return lld
+        hip_path = os.getenv("HIP_PATH")
+        exe = sysconfig.get_config_var("EXE")
+        if hip_path:
+            lld = Path(hip_path) / f"bin/ld.lld{exe}"
+            if lld.is_file():
+                return lld
         # Check backend for ld.lld (used for pytorch wheels)
-        lld = Path(__file__).parent / "llvm/bin/ld.lld"
+        lld = Path(__file__).parent / f"llvm/bin/ld.lld{exe}"
         if lld.is_file():
             return lld
         lld = Path("/opt/rocm/llvm/bin/ld.lld")

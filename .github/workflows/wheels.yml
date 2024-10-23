@@ -7,11 +7,27 @@ on:
 permissions: read-all
 
 jobs:
+  Runner-Preparation:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Prepare runner matrix
+        id: set-matrix
+        run: |
+          if [ x"${{ github.repository }}" == x"triton-lang/triton" ]; then
+            echo 'matrix={"runner":["self-hosted", "CPU"]}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix={"runner":["windows-latest"]}' >> "$GITHUB_OUTPUT"
+          fi
 
   Build-Wheels:
-    timeout-minutes: 60
+    timeout-minutes: 90
+    needs: Runner-Preparation
 
-    runs-on: [self-hosted, CPU]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix: ${{ fromJson(needs.Runner-Preparation.outputs.matrix) }}
     permissions:
       id-token: write
       contents: read
@@ -19,6 +35,7 @@ jobs:
     steps:
 
       - name: Prune stale docker containers
+        if: ${{ github.repository == 'triton-lang/triton' }}
         run: |
           # If cibuildwheel crashes (or, say, is OOM-killed), it leaves behind a
           # docker container.  Eventually these consume all the disk space on
@@ -31,6 +48,7 @@ jobs:
       # The LATEST_DATE here should be kept in sync with the one in Patch setup.py
       - id: check-version
         name: Check latest version
+        shell: bash
         run: |
           export PACKAGE_DATE=$(python3 -m pip install --user --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/Triton-Nightly/pypi/simple/ --dry-run triton-nightly== |& grep -oP '(?<=, )[0-9\.]+dev[0-9]+(?=\))' | grep -oP '(?<=dev)[0-9]+')
           export LATEST_DATE=$(TZ=UTC0 git show --quiet --date='format-local:%Y%m%d%H%M%S' --format="%cd")
@@ -40,15 +58,74 @@ jobs:
             echo "new_commit=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Set up Python 3.12
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && matrix.runner == 'windows-latest' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install pip dependencies
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && endsWith(matrix.runner, '-latest') }}
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install cibuildwheel cython setuptools==75.2.0 wheel cmake==3.24 ninja pytest-forked pytest-xdist lit
+      - name: Setup Micromamba
+        # install cuda drivers
+        uses: mamba-org/setup-micromamba@v1
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && endsWith(matrix.runner, '-latest') }}
+        with:
+          environment-name: triton-env
+          init-shell: bash
+          create-args: >-
+            cibuildwheel typer ca-certificates certifi openssl zlib zstd llvm>=17.0
+          condarc: |
+            channels:
+              - nvidia/label/cuda-12.1
+              - conda-forge
+              - pytorch
+            channel_priority: strict
+
+      - name: set Environment Variables
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && endsWith(matrix.runner, '-latest') }}
+        shell: bash -el {0}
+        env:
+          LLVM_LOCAL_HASH: ${{ vars.LLVM_LOCAL_HASH }}
+        run: |
+          # compile with clang
+          echo "TRITON_BUILD_WITH_CLANG_LLD=1" >> "${GITHUB_ENV}"
+          # use local llvm;mlir build
+          if [ "${{ matrix.runner }}" = 'windows-latest' -a "${{ env.LLVM_LOCAL_HASH }}" != "" ]; then
+            ver=$(echo "${{ env.LLVM_LOCAL_HASH }}" | cut -c1-8)
+            curl -L -O https://github.com/${{ github.repository }}/releases/download/llvm-$ver-windows/llvm-$ver-windows-x64.tar.gz
+            curl -L -O https://github.com/${{ github.repository }}/releases/download/llvm-$ver-windows/llvm-fix.patch
+            tar xvf llvm-$ver-windows-x64.tar.gz
+            mv llvm-$ver-windows-x64 LLVM
+            [ "Not Found" != "$(head llvm-fix.patch)" ] && patch -p0 < llvm-fix.patch
+            echo "LLVM_SYSPATH=${{ github.workspace }}\\LLVM" >> "$GITHUB_ENV"
+            rm -f llvm-$ver-windows-x64.tar.gz
+            exit 0
+          fi
+          LLVM_SHORTHASH="$(cat cmake/llvm-hash.txt | cut -c1-8)"
+          # prepare LLVM prebuilt path. will be downloaded and extracted by setup.py step
+          echo "~/.triton/llvm/llvm-$LLVM_SHORTHASH-windows-x64/bin" >> "$GITHUB_PATH"
+          #echo "LLVM_SYSPATH=~/.triton/llvm/llvm-$LLVM_SHORTHASH-windows-x64" >> "$GITHUB_ENV"
+      - name: CUDA Setup 12.1
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && endsWith(matrix.runner, '-latest') }}
+        shell: bash -el {0}
+        run: |
+          CUDA_HOME="${{ env.MAMBA_ROOT_PREFIX }}/envs/triton-env"
+          echo CUDA_HOME=$CUDA_HOME >> "$GITHUB_ENV"
+          echo CUDA_PATH=$CUDA_HOME >> "$GITHUB_ENV"
+
       - name: Patch setup.py
-        if: ${{ steps.check-version.outputs.new_commit == 'true' }}
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && !endsWith(matrix.runner, '-latest') }}
         run: |
           echo "" >> python/setup.cfg
           echo "[build_ext]" >> python/setup.cfg
           echo "base-dir=/project" >> python/setup.cfg
 
       - name: Build wheels
-        if: ${{ steps.check-version.outputs.new_commit == 'true' }}
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && !endsWith(matrix.runner, '-latest') }}
         run: |
           export LATEST_DATE=$(TZ=UTC0 git show --quiet --date='format-local:%Y%m%d%H%M%S' --format="%cd")
           # Pass MAX_JOBS=4 because, at time of writing, the VM "only" has 32GB
@@ -67,13 +144,51 @@ jobs:
           export CIBW_BUILD="cp3*-manylinux_x86_64"
           python3 -m cibuildwheel python --output-dir wheelhouse
 
+      - name: Build wheels ( ${{ matrix.runner }} )
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && endsWith(matrix.runner, '-latest') }}
+        shell: bash -el {0}
+        run: |
+          export LATEST_DATE=$(TZ=UTC0 git show --quiet --date='format-local:%Y%m%d%H%M%S' --format="%cd")
+          # Pass MAX_JOBS=4 because, at time of writing, the VM "only" has 32GB
+          # of RAM and OOMs while building if we give it the default number of
+          # workers (2 * NUM_CPUs).
+          export CIBW_ENVIRONMENT="MAX_JOBS=4 \
+                  TRITON_WHEEL_NAME=triton-nightly \
+                  TRITON_WHEEL_VERSION_SUFFIX=-$LATEST_DATE \
+                  TRITON_BUILD_WITH_CLANG_LLD=1"
+          if [ "${{ matrix.runner }}" = "ubuntu-latest" ]; then
+            echo "" >> python/setup.cfg
+            echo "[build_ext]" >> python/setup.cfg
+            echo "base-dir=/project" >> python/setup.cfg
+            export CIBW_MANYLINUX_X86_64_IMAGE="quay.io/pypa/manylinux_2_28_x86_64:latest"
+            #export CIBW_MANYLINUX_PYPY_X86_64_IMAGE="quay.io/pypa/manylinux_2_28_x86_64:latest"
+            # many_linux_2_28 image comes with GCC 12.2.1, but not clang.
+            # With this install, it gets clang 16.0.6.
+            export CIBW_BEFORE_ALL="dnf install clang lld -y";
+            export CIBW_SKIP="cp{35,36,37,38,39,312}-*"
+            export CIBW_BUILD="cp3*-manylinux_x86_64"
+          fi
+          if [ "${{ matrix.runner }}" = "windows-latest" ]; then
+            export CIBW_SKIP="cp{35,36,37,38,39}-*"
+            export CIBW_BUILD="cp3*-win_amd64"
+          fi
+          python3 -m cibuildwheel python --output-dir wheelhouse
+
+      - name: Local Upload Build wheels
+        if: ${{ github.repository != 'triton-lang/triton' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: triton-dist ${{ matrix.runner }}
+          path: |
+            ${{ github.workspace }}/wheelhouse/*
+
       - name: Install Azure CLI
-        if: ${{ steps.check-version.outputs.new_commit == 'true' }}
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && github.repository == 'triton-lang/triton' }}
         run: |
           curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
       - name: Azure login
-        if: ${{ steps.check-version.outputs.new_commit == 'true' }}
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && github.repository == 'triton-lang/triton' }}
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -82,20 +197,20 @@ jobs:
 
       - id: generate-token
         name: Generate token
-        if: ${{ steps.check-version.outputs.new_commit == 'true' }}
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && github.repository == 'triton-lang/triton' }}
         run: |
           AZ_TOKEN=$(az account get-access-token --query accessToken)
           echo "::add-mask::$AZ_TOKEN"
           echo "access_token=$AZ_TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Publish wheels to Azure DevOps
-        if: ${{ steps.check-version.outputs.new_commit == 'true' }}
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && github.repository == 'triton-lang/triton' }}
         run: |
           python3 -m pip install twine
           python3 -m twine upload -r Triton-Nightly -u TritonArtifactsSP -p ${{ steps.generate-token.outputs.access_token }} --config-file utils/nightly.pypirc --non-interactive --verbose wheelhouse/*
 
       - name: Azure Logout
-        if: ${{ steps.check-version.outputs.new_commit == 'true' && (success() || failure()) }}
+        if: ${{ steps.check-version.outputs.new_commit == 'true' && (success() || failure()) && github.repository == 'triton-lang/triton' }}
         run: |
           az logout
           az cache purge

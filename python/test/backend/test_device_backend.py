@@ -43,7 +43,21 @@ def build_for_backend(name, src, srcdir):
         scheme = 'posix_prefix'
     py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
 
-    ret = subprocess.check_call([cc, src, f"-I{py_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", "-o", so])
+    py_lib_dirs = []
+    if os.name == "nt":
+        installed_base = sysconfig.get_config_var('installed_base')
+        py_lib_dirs = [os.getenv("PYTHON_LIB_DIRS", os.path.join(installed_base, "libs"))]
+
+    if os.name == "nt" and os.path.basename(cc).lower() in ["cl", "clang-cl", "cl.exe", "clang-cl.exe"]:
+        cmd = [cc, src, f"-I{py_include_dir}", f"-I{srcdir}", "/LD", f"/OUT:{so}"]
+        cmd += [f"/LIBPATH:{dir}" for dir in py_lib_dirs]
+        ret = subprocess.check_call(cmd)
+    else:
+        cmd = [cc, src, f"-I{py_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", "-o", so]
+        cmd += [f"-L{dir}" for dir in py_lib_dirs]
+        if os.name == "nt":
+            cmd.pop(cmd.index("-fPIC"))
+        ret = subprocess.check_call(cmd)
     if ret == 0:
         return so
     # fallback on setuptools
@@ -59,7 +73,7 @@ def build_for_backend(name, src, srcdir):
         language='c',
         sources=[src],
         include_dirs=include_dirs,
-        extra_compile_args=extra_compile_args + ['-O3'],
+        extra_compile_args=extra_compile_args + ['-O3' if "-shared" in cmd else "/O2"],
         extra_link_args=extra_link_args,
         library_dirs=library_dirs,
         libraries=libraries,
@@ -91,7 +105,8 @@ class ExtensionUtils:
         src = Path(os.path.join(dirname, "extension_backend.c")).read_text()
         key = hashlib.sha256(src.encode("utf-8")).hexdigest()
         cache = get_cache_manager(key)
-        fname = "ext_utils.so"
+        soext = "so" if os.name != "nt" else "pyd"
+        fname = "ext_utils." + soext
         cache_path = cache.get_file(fname)
         if cache_path is None:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -174,7 +189,8 @@ class ExtensionBackend(BaseBackend):
         # name of files that are cached
         so_cache_key = make_so_cache_key(self.get_version_key(), signature, constants)
         so_cache_manager = get_cache_manager(so_cache_key)
-        so_name = f"{name}.so"
+        soext = "so" if os.name != "nt" else "pyd"
+        so_name = f"{name}.{soext}"
         # retrieve stub from cache if it exists
         cache_path = so_cache_manager.get_file(so_name)
         if cache_path is None:
